@@ -2,29 +2,361 @@
 title: "Met_Diet_129"
 author: "Qi Yan"
 date: "8/21/2019"
-output: html_document
+output: 
+  html_document:
+    toc: TRUE # table of content true
+    toc_depth: 3  # upto three depths of headings (specified by #, ## and ###)
+    toc_float: true
+    number_sections: FALSE
+    theme: united  
+    highlight: tango
+    df_print: paged
+    code_folding: show
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(xlsx)
+library(doParallel)
+library(ggridges)
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(gridExtra)
+
+options(stringsAsFactors = FALSE)
 ```
 
-## R Markdown
+# Data Preprocessing
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Import Data
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r import data, echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+setwd("/Users/qiyan/Dropbox/PARENTs")
+met_raw <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/all_mets_corrected_exclude_where_std_low.xlsx", sheetName = "Corrected", header = T)
+met_raw <- met_raw[which(met_raw$C_Label == 0), -2]
+met_raw <- met_raw[,order(colnames(met_raw))]
 
-```{r cars}
-summary(cars)
+key <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/PARENTs Sample Guide.xlsx", sheetIndex = 2, header = T)
+met_class <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/Metabolite_list_category.xlsx", sheetIndex = 1, header = T)
+pheno_raw <- read.csv(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/PARENTs_KeyVariables_190403.csv", header = T)
+nut_raw <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/dietcalc_results_20190621.results_IDR.xlsx", sheetIndex = 1, header = T)
+
+# Link Christofk_ID with Subject_ID
+temp_ID <- data.frame(colnames(met_raw)[-1]); colnames(temp_ID) <- "Christofk_ID"
+temp_ID <- merge(temp_ID, key, by = "Christofk_ID")
+colnames(met_raw) <- c("Compound", temp_ID$Subject_ID); rownames(met_raw) <- met_raw$Compound
+
+# Create clean datasets for downstream analyses
+met <- data.frame(t(met_raw[,-1])); met <- cbind(rownames(met), met)
+colnames(met)[1] <- "Subject_ID"
+
+pheno <- pheno_raw[which(pheno_raw$Subject_ID %in% met$Subject_ID),] # PJR81X, PIM84B, PDD77V couldn't find a match
+
+nut <- nut_raw[which(nut_raw$PARENTs.ID %in% met$Subject_ID),]
+
+save(met, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_raw.RData")
 ```
 
-## Including Plots
+## Quality Control
 
-You can also embed plots, for example:
+Here is Ernst's reply: 
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+So original: the raw peak areas of metabolites and their isotopomers outputed by the programs no normalization or anything;
+
+corrected: the peak areas of the isotopomers for each metabolite corrected for the natural abundance of C13 ;
+
+PoolAfterDF: the sum of all the peak areas across all the isotopomers for a specific metabolite;
+
+Trifluoromethanosulfate is the standard I added. The same amount is added to all samples so it should have the same peak area. It is not necessary but can be helpeful to normalize to it so that you reduce the effects of machine performance drift throughout the runs.
+
+### Distribution of raw intensity
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 15, fig.width = 15}
+load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_raw.RData")
+met_raw_stat <- data.frame(colnames(met[,-1])); colnames(met_raw_stat)[1] <- "metabolite"
+met_raw_stat$mean <- apply(met[,-1], 2, mean); met_raw_stat$sd <- apply(met[,-1], 2, sd)
+met_raw_stat$rsd <- met_raw_stat$sd/met_raw_stat$mean
+met_raw_stat <- met_raw_stat[order(-met_raw_stat$rsd),]
+met_raw_stat[1:10,]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 15, fig.width = 15}
+ggplot(stack(met[,-1]), aes(x = values, y = ind, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis(option = "C") +
+  labs(title = 'Distribution of the raw intensity of metabolites', x = "Intensity", y = "Metabolites") +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  )
+
+ggplot(stack(subset(met, select = -c(Subject_ID, trifluoromethanosulfate))), aes(x = values, y = ind, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis(option = "C") +
+  labs(title = 'Distribution of the raw intensity of metabolites \n w/o trifluoromethanosulfate', x = "Intensity", y = "Metabolites") +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  )
+```
+
+### Missing value
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+met_missing <- data.frame(colnames(met[,-1]))
+met_missing$num_missing <- apply(met[,-1], 2, function(x) sum(x==0))
+met_missing$percent_missing <- round(met_missing$num_missing/129*100,2)
+colnames(met_missing)[1] <- "metabolite"
+met_missing <- met_missing[order(-met_missing$num_missing),]
+met_missing[which(met_missing$num_missing!=0),]
+```
+
+Impute missing value (0) with half of the minimum positive value in the original data.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+met_impute <- met; met_impute[met_impute==0] <- NA
+halfdatmin <- min(met_impute[,-1], na.rm = TRUE)*0.5
+met_impute[is.na(met_impute)] <- halfdatmin
+```
+
+### Batch Effect
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
+batch_impute <- merge(batch, met_impute, by = "Subject_ID")
+batch_pca <- prcomp(batch_impute[,3:ncol(batch_impute)], center = TRUE, scale. = TRUE)
+
+ggbiplot::ggbiplot(batch_pca, ellipse=FALSE,  groups=batch_impute$Batch)
+```
+
+Correlation between top 5 PCs and batchs.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+batch_cor <- data.frame(PCs = colnames(batch_pca$x[,1:5]))
+batch_cor$corr <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_impute$Batch)))$estimate)
+batch_cor$P_value <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_impute$Batch)))$p.value)
+
+batch_cor
+```
+
+Control for batch effect using combat.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+met_norm <- subset(met_impute, select = -c(trifluoromethanosulfate))
+# batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
+met_norm <- merge(batch, met_norm, by = "Subject_ID")
+rownames(met_norm) <- met_norm$Subject_ID
+
+met_norm <- sva::ComBat(dat=t(met_norm[,3:ncol(met_norm)]), batch=met_norm$Batch, mod=NULL, par.prior=TRUE, prior.plots=FALSE)
+met_norm <- data.frame(colnames(met_norm), t(met_norm)); colnames(met_norm)[1] <- "Subject_ID"
+
+batch_combat <- merge(batch, met_norm, by = "Subject_ID")
+batch_pca <- prcomp(batch_combat[,3:ncol(batch_combat)], center = F, scale. = F)
+ggbiplot::ggbiplot(batch_pca, ellipse=FALSE,  groups=batch_combat$Batch, var.axes = F)
+
+batch_cor <- data.frame(PCs = colnames(batch_pca$x[,1:5]))
+batch_cor$corr <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_combat$Batch)))$estimate)
+batch_cor$P_value <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_combat$Batch)))$p.value)
+
+batch_cor
+```
+
+Control for batch effect by normalization by reference feature trifluoromethanosulfate.
+
+This method didn't work well. Couldn't fully adjust for batch effect, and highly correlated data.
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+CompNorm<-function(x, ref){
+  10E9*x/x[ref];
+}
+
+met_norm<-t(apply(met_impute[,-1], 1, CompNorm, "trifluoromethanosulfate"))
+met_norm <- data.frame(met_impute$Subject_ID, met_norm); colnames(met_norm)[1] <- "Subject_ID"
+met_norm <- subset(met_norm, select = -c(trifluoromethanosulfate))
+
+# batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
+batch_ref <- merge(batch, met_norm, by = "Subject_ID")
+batch_pca <- prcomp(batch_ref[,3:ncol(batch_ref)], center = F, scale. = F)
+
+batch_cor <- data.frame(PCs = colnames(batch_pca$x[,1:5]))
+batch_cor$corr <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_ref$Batch)))$estimate)
+batch_cor$P_value <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_ref$Batch)))$p.value)
+
+batch_cor
+```
+
+### Transformation
+
+Conduct generalized logarithm transformation.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+LogNorm<-function(x, min.val){
+  log2((x + sqrt(x^2 + min.val^2))/2)
+}
+min.val <- halfdatmin/5
+met_trans <- data.frame(cbind(met_norm$Subject_ID, apply(met_norm[,-1], 2, LogNorm, min.val))); colnames(met_trans)[1] <- "Subject_ID"
+met_trans[,-1] <- apply(met_trans[,-1], 2, function(x) as.numeric(x))
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 15, fig.width = 15}
+ggplot(stack(met_trans[,-1]), aes(x = values, y = ind, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis(option = "C") +
+  labs(title = 'Distribution of the raw intensity of metabolites', x = "Intensity", y = "Metabolites") +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  )
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+save(met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+```
+
+# Data Mining
+
+## Metabolites
+
+### Correlation between metabolites
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+
+met_corr <- met_trans[,-1]
+met_corr <- met_corr[,order(colnames(met_corr))]
+
+met_corr <- cor(met_corr)
+annotation_col <- met_class[which(met_class$Met_ID %in% colnames(met_corr)), -2]; annotation_col <- annotation_col[order(annotation_col$Met_ID),]
+rownames(annotation_col) <- annotation_col$Met_ID; annotation_col <- subset(annotation_col, select = -c(Met_ID))
+
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = met_corr, fontsize=12, fontsize_row=12, color = colors, annotation_col = annotation_col)
+```
+
+![heatmap](/Users/qiyan/Dropbox/PARENTs/Output/heatmap_metabolites.PNG)
+
+## Metabolites - Phenotypes
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+met_pheno_input <- met_trans[which(rownames(met_trans) %in% pheno$Subject_ID), -1]
+met_pheno_input <- met_pheno_input[,order(colnames(met_pheno_input))]
+
+# split pheno dataset into numeric and character ones
+pheno_numeric <- select_if(pheno, is.numeric)
+pheno_char <- select_if(pheno, is.character)
+```
+
+### PCA analysis
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+pca <- prcomp(met_pheno_input, center = T, scale. = T)
+summary(pca)
+pca_score <- data.frame(pca$x[,1:10])
+
+ggbiplot::ggbiplot(pca, ellipse=FALSE, var.axes = T) +
+  labs(title = "PCA plot of metabolites")
+```
+
+#### ANOVA test: PC scores with categorical variables
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+anova <- data.frame(pca_score, pheno_char)
+anova[anova == ""] <- NA
+anova <- anova[,-c(11,12,18:22,29,30)]
+
+anova_summary <- data.frame(colnames(anova), PC1 = 1, PC2 = 1, PC3 = 1, PC4 = 1, PC5 = 1, PC6 = 1, PC7 = 1, PC8 = 1, PC9 = 1, PC10 = 1)
+
+for (i in 1:10) {
+  for (j in c(11:ncol(anova))){
+    anova_summary[j,i+1] <- summary(aov(anova[,i] ~ anova[,j], data = anova, na.action = na.exclude))[[1]][["Pr(>F)"]][1]
+  }
+}
+
+anova_summary <- anova_summary[-c(1:10),]
+
+significant_variable_cat <- {}
+for (i in 1:nrow(anova_summary)) {
+  if(sum(anova_summary[i,] < 0.05) > 0){
+    temp <- anova_summary[i,1]
+    significant_variable_cat <- cbind(significant_variable_cat, temp)
+  }
+}
+
+print("Categorical variables significanly associated with PC1 - PC10")
+as.vector(significant_variable_cat)
+```
+
+#### Correlation test: PC scores with numeric variables
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+corr <- pheno_numeric[,-c(24:28)]
+
+corr_summary <- data.frame(colnames(corr), PC1 = 1, PC2 = 1, PC3 = 1, PC4 = 1, PC5 = 1, PC6 = 1, PC7 = 1, PC8 = 1, PC9 = 1, PC10 = 1)
+
+for (i in 1:10) {
+  for (j in c(1:ncol(corr))){
+    corr_summary[j,i+1] <- cor.test(corr[,j], pca_score[,i], na.action = na.rm)$p.value
+  }
+}
+
+
+significant_variable_num <- {}
+for (i in 1:nrow(corr_summary)) {
+  if(sum(corr_summary[i,] < 0.05) > 0){
+    temp <- corr_summary[i,1]
+    significant_variable_num <- cbind(significant_variable_num, temp)
+  }
+}
+
+print("Numeric variables significanly associated with PC1 - PC10")
+as.vector(significant_variable_num)
+```
+
+### PhenoMWAS
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+pheno_used <- pheno
+rownames(pheno_used) <- pheno_used$Subject_ID
+pheno_used <- pheno_used[,which(colnames(pheno_used) %in% c(corr_summary$colnames.corr., anova_summary$colnames.anova.))]
+pheno_used[pheno_used == ""] <- NA
+
+PhenoMWAS_summary <- data.frame(); k=1
+
+for (i in 1:ncol(met_pheno_input)) {
+  for (j in 1:ncol(pheno_used)) {
+    temp <- summary(lm(met_pheno_input[,i] ~ pheno_used[,j]))$coefficients[-1,4]
+    if(sum(temp < 0.05) > 0){
+      PhenoMWAS_summary[k,1] <- colnames(pheno_used)[j]
+      PhenoMWAS_summary[k,2] <- colnames(met_pheno_input)[i]
+      k = k + 1
+    }
+  }
+}
+
+colnames(PhenoMWAS_summary) <- c("Pheno", "Metabolite")
+
+PhenoMWAS_summary <- merge(x = PhenoMWAS_summary, y = met_class[,c(1,3)], by.x = "Metabolite", by.y = "Met_ID", all.x = T)
+PhenoMWAS_summary <- PhenoMWAS_summary[order(PhenoMWAS_summary$Pheno),]
+PhenoMWAS_summary <- PhenoMWAS_summary[,c("Pheno", "Metabolite", "Class")]
+
+PhenoMWAS_summary
+
+unique(PhenoMWAS_summary$Pheno)
+unique(PhenoMWAS_summary$Metabolite)
+```
+
+
+
+
+
+
