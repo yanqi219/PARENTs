@@ -158,7 +158,7 @@ met_norm <- sva::ComBat(dat=t(met_norm[,3:ncol(met_norm)]), batch=met_norm$Batch
 met_norm <- data.frame(colnames(met_norm), t(met_norm)); colnames(met_norm)[1] <- "Subject_ID"
 
 batch_combat <- merge(batch, met_norm, by = "Subject_ID")
-batch_pca <- prcomp(batch_combat[,3:ncol(batch_combat)], center = F, scale. = F)
+batch_pca <- prcomp(batch_combat[,3:ncol(batch_combat)], center = T, scale. = T)
 ggbiplot::ggbiplot(batch_pca, ellipse=FALSE,  groups=batch_combat$Batch, var.axes = F)
 
 batch_cor <- data.frame(PCs = colnames(batch_pca$x[,1:5]))
@@ -219,7 +219,8 @@ ggplot(stack(met_trans[,-1]), aes(x = values, y = ind, fill = ..x..)) +
 ```
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-save(met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+# Save data: met_norm - correct for batches, but not log transformation; met_trans - log transformation
+save(met_norm, met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 ```
 
 # Data Mining
@@ -246,10 +247,14 @@ pheatmap::pheatmap(mat = met_corr, fontsize=12, fontsize_row=12, color = colors,
 
 ## Metabolites - Phenotypes
 
+Only 126 subjects have pheno data, so restricted to 126 subjects.
+
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
 load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 met_pheno_input <- met_trans[which(rownames(met_trans) %in% pheno$Subject_ID), -1]
 met_pheno_input <- met_pheno_input[,order(colnames(met_pheno_input))]
+met_pheno_input_untrans <- met_norm[which(rownames(met_norm) %in% pheno$Subject_ID), -1]
+met_pheno_input_untrans <- met_pheno_input_untrans[,order(colnames(met_pheno_input_untrans))]
 
 # split pheno dataset into numeric and character ones
 pheno_numeric <- select_if(pheno, is.numeric)
@@ -259,12 +264,26 @@ pheno_char <- select_if(pheno, is.character)
 ### PCA analysis
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-pca <- prcomp(met_pheno_input, center = T, scale. = T)
+# Use non-transformed data matrix, center and scale = T
+pca <- prcomp(met_pheno_input_untrans, center = T, scale. = T)
 summary(pca)
 pca_score <- data.frame(pca$x[,1:10])
 
 ggbiplot::ggbiplot(pca, ellipse=FALSE, var.axes = T) +
   labs(title = "PCA plot of metabolites")
+```
+
+Plot the loadings of PCs.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 12, fig.width = 12}
+pca_loading <- pca$rotation
+
+annotation_col <- met_class[which(met_class$Met_ID %in% rownames(pca_loading)), -2]; annotation_col <- annotation_col[order(annotation_col$Met_ID),]
+rownames(annotation_col) <- annotation_col$Met_ID; annotation_col <- subset(annotation_col, select = -c(Met_ID))
+
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = pca_loading[,1:10], fontsize=12, fontsize_row=12, color = colors, annotation_row = annotation_col, cluster_cols = F, cellwidth = 25, cellheight = 12
+)
 ```
 
 #### ANOVA test: PC scores with categorical variables
@@ -296,6 +315,30 @@ print("Categorical variables significanly associated with PC1 - PC10")
 as.vector(significant_variable_cat)
 ```
 
+```{r, echo=FALSE}
+library(shiny)
+
+pheno_char_shiny <- anova[,-c(1:10)]
+
+shinyApp(
+
+  ui = fluidPage(
+    selectInput("cov", "Categorical variable:",
+                choices = colnames(pheno_char_shiny)),
+    plotOutput("pcaPlot")
+  ),
+
+  server = function(input, output) {
+    output$pcaPlot = renderPlot({
+      ggbiplot::ggbiplot(pca, ellipse=FALSE, var.axes = F, groups = pheno_char_shiny[,input$cov]) +
+  labs(title = "PCA plot of metabolites")
+    })
+  },
+
+  options = list(height = 500)
+)
+```
+
 #### Correlation test: PC scores with numeric variables
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
@@ -320,6 +363,45 @@ for (i in 1:nrow(corr_summary)) {
 
 print("Numeric variables significanly associated with PC1 - PC10")
 as.vector(significant_variable_num)
+```
+
+```{r, echo=FALSE}
+library(shiny)
+
+pheno_num_shiny <- corr
+
+shinyApp(
+  
+  ui = fluidPage(
+    selectInput("cov", "Numeric variable:",
+                choices = colnames(pheno_num_shiny)),
+    column(6,
+           plotOutput("histPlot"),
+           verbatimTextOutput("text"))
+  ),
+  
+  server = function(input, output) {
+    output$histPlot = renderPlot({
+      ggplot(pheno_num_shiny, aes(x=pheno_num_shiny[,input$cov],)) + 
+        geom_histogram(colour = "black", fill = "lightseagreen") + 
+        geom_rug(aes(y=0),  sides="b", position = "jitter") +
+        theme(axis.title.x=element_blank())
+    })
+    output$text <- renderText({
+      paste("Number of missing:", sum(is.na(pheno_num_shiny[,input$cov])))
+      paste("Number of missing:", sum(is.na(pheno_num_shiny[,input$cov])), "\nMean:", mean(pheno_num_shiny[,input$cov], na.rm = T), "\nMedian:", median(pheno_num_shiny[,input$cov], na.rm = T))
+    })
+  },
+  
+  options = list(height = 500)
+)
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 6}
+num_corr <- cor(corr, pca_score,use = "p")
+
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = num_corr, fontsize=12, fontsize_row=12, color = colors, cluster_cols = F, cellheight = 10)
 ```
 
 ### PhenoMWAS
@@ -354,6 +436,150 @@ PhenoMWAS_summary
 unique(PhenoMWAS_summary$Pheno)
 unique(PhenoMWAS_summary$Metabolite)
 ```
+
+## Diets
+
+Only 94 subjects have diet data.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+
+nut_used <- nut[,-c(1:6)]
+rownames(nut_used) <- nut$PARENTs.ID
+
+print("Number of diets:")
+print(dim(nut_used))
+
+head(nut_used)
+```
+
+### Missing values
+
+Remove diet variables if everyone = 0;
+
+Check diet variables if perentage of missing >= 0.8.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+print("Variables that everyone is mssing:"); colnames(nut_used[,which(apply(nut_used, 2, function(x) sum(x == 0))/94*100 == 100)])
+# Remove 100% missing variables
+nut_rmMissing <- nut_used[,-which(apply(nut_used, 2, function(x) sum(x == 0))/94*100 == 100)]
+
+missing <- nut_used[,which(apply(nut_used, 2, function(x) sum(x == 0))/94*100 > 80 & apply(nut_used, 2, function(x) sum(x == 0))/94*100 < 100)]
+print("Variable with more than 80% missing:"); colnames(missing)
+missing
+```
+
+### Distribution and outliers
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 40, fig.width = 15}
+ggplot(stack(nut_rmMissing), aes(x = values, y = ind, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis(option = "C") +
+  labs(title = 'Distribution of the raw values of diet variables', x = "Values", y = "Diets") +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  )
+```
+
+Use 3SD as the threshold of outlier. Create a PDF report.
+
+Notice: for all plots, zero values have been removed.
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+pdf(file = "/Users/qiyan/Dropbox/PARENTs/Output/Diet_data_dist.pdf")
+
+# First remove 0 values, and then check for outlier
+# Inspired by https://www.r-bloggers.com/identify-describe-plot-and-remove-the-outliers-from-the-dataset/
+
+data_expo <- function(dt) {
+  for (i in 1:ncol(dt)) {
+    var_name <- dt[,i]
+    na1 <- sum(is.na(var_name))
+    # check for 0
+    var_missing <- sum(var_name == 0)
+    var_name[which(var_name == 0)] <- NA # change 0 to NA
+    # mean and sd with outliers
+    m1 <- mean(var_name, na.rm = T)
+    sd1 <- sd(var_name, na.rm = T)
+    par(mfrow=c(2, 2), oma=c(0,0,5,0))
+    boxplot(var_name, main="With outliers")
+    hist(var_name, main="With outliers", xlab=NA, ylab=NA)
+    # Detect outlier
+    {
+      lowerq = quantile(var_name, na.rm = T)[2]
+      upperq = quantile(var_name, na.rm = T)[4]
+      iqr = IQR(var_name, , na.rm = T)#Or use IQR(var_name)
+      # we identify extreme outliers
+      extreme.threshold.upper = (iqr * 3) + upperq
+      extreme.threshold.lower = lowerq - (iqr * 3)
+      outlier <- which(var_name > extreme.threshold.upper | var_name < extreme.threshold.lower)
+      number_outlier <- length(outlier)
+    }
+    # mean of outlier
+    mo <- mean(var_name[outlier])
+    var_name[outlier] <- NA
+    boxplot(var_name, main="Without outliers")
+    hist(var_name, main="Without outliers", xlab=NA, ylab=NA)
+    
+    title_text <- paste(colnames(dt)[i], "\nNumber of 0s:", var_missing,"\nMean:", round(m1, 2), " SD:", round(sd1, 2), 
+                        " Outliers identified:", number_outlier, 
+                        "\nMean of the outliers:", round(mo, 2), " Mean if we remove outliers:", round(m2, 2))
+    title(title_text, outer=TRUE, line = -1)
+  }
+}
+
+data_expo(nut_rmMissing)
+dev.off()
+```
+
+Check how many outliers per subject.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+count_outlier <- function(var_name){
+  lowerq = quantile(var_name, na.rm = T)[2]
+  upperq = quantile(var_name, na.rm = T)[4]
+  iqr = IQR(var_name, , na.rm = T)#Or use IQR(var_name)
+  # we identify extreme outliers
+  extreme.threshold.upper = (iqr * 3) + upperq
+  extreme.threshold.lower = lowerq - (iqr * 3)
+  return(var_name > extreme.threshold.upper | var_name < extreme.threshold.lower)
+}
+
+missing_matrix <- apply(nut_rmMissing, 2, function(x) count_outlier(x))
+rownames(missing_matrix) <- rownames(nut_rmMissing)
+
+print("Subjects with more than 20% outliers:")
+names(which(apply(missing_matrix, 1, function(x) sum(x)/dim(nut_rmMissing)[2]*100 > 20)))
+
+print(sum(missing_matrix['PAB81P',])/dim(nut_rmMissing)[2]*100)
+print(sum(missing_matrix['PLC79F',])/dim(nut_rmMissing)[2]*100)
+```
+
+### transformation and standardization
+Heatmap
+
+### Correlation
+
+### PCA
+
+
+### cluster of subjects
+
+
+# PC - met
+
+
+
+# To do
+
+* Don't have Age and Sex for everyone...
+* How to deal with missing values?
+* How to deal with outliers? Threshold of outlier?
+
+
 
 
 
