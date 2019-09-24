@@ -25,6 +25,7 @@ library(ggplot2)
 library(viridis)
 library(hrbrthemes)
 library(gridExtra)
+library(factoextra)
 
 options(stringsAsFactors = FALSE)
 ```
@@ -243,7 +244,7 @@ colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
 pheatmap::pheatmap(mat = met_corr, fontsize=12, fontsize_row=12, color = colors, annotation_col = annotation_col)
 ```
 
-![heatmap](/Users/qiyan/Dropbox/PARENTs/Output/heatmap_metabolites.PNG)
+![Heatmap of correlation between metabolites](/Users/qiyan/Dropbox/PARENTs/Output/heatmap_metabolites.PNG)
 
 ## Metabolites - Phenotypes
 
@@ -282,7 +283,7 @@ annotation_col <- met_class[which(met_class$Met_ID %in% rownames(pca_loading)), 
 rownames(annotation_col) <- annotation_col$Met_ID; annotation_col <- subset(annotation_col, select = -c(Met_ID))
 
 colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
-pheatmap::pheatmap(mat = pca_loading[,1:10], fontsize=12, fontsize_row=12, color = colors, annotation_row = annotation_col, cluster_cols = F, cellwidth = 25, cellheight = 12
+pheatmap::pheatmap(mat = pca_loading[,1:10], fontsize=12, fontsize_row=12, color = colors, annotation_row = annotation_col, cluster_cols = F, cellwidth = 25, cellheight = 12, main = "Loadings"
 )
 ```
 
@@ -484,7 +485,7 @@ ggplot(stack(nut_rmMissing), aes(x = values, y = ind, fill = ..x..)) +
   )
 ```
 
-Use 3SD as the threshold of outlier. Create a PDF report.
+Use __3SD__ as the threshold of outlier. Create a PDF report.
 
 Notice: for all plots, zero values have been removed.
 
@@ -523,6 +524,7 @@ data_expo <- function(dt) {
     var_name[outlier] <- NA
     boxplot(var_name, main="Without outliers")
     hist(var_name, main="Without outliers", xlab=NA, ylab=NA)
+    m2 <- mean(var_name, na.rm = T)
     
     title_text <- paste(colnames(dt)[i], "\nNumber of 0s:", var_missing,"\nMean:", round(m1, 2), " SD:", round(sd1, 2), 
                         " Outliers identified:", number_outlier, 
@@ -558,29 +560,332 @@ print(sum(missing_matrix['PAB81P',])/dim(nut_rmMissing)[2]*100)
 print(sum(missing_matrix['PLC79F',])/dim(nut_rmMissing)[2]*100)
 ```
 
-### transformation and standardization
-Heatmap
+Highlighted all outliers and exported to Excel.
 
-### Correlation
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+# Inspired by https://stackoverflow.com/questions/21618556/export-data-frames-to-excel-via-xlsx-with-conditional-formatting
+
+indi <- "test"
+for (i in 1:ncol(missing_matrix)) {
+  if(sum(missing_matrix[,i]) > 0){
+    row.indi <- which(missing_matrix[,i] == TRUE) + 1
+    indi_temp <- paste(row.indi, ".", i+1, sep = "")
+    indi <- c(indi, indi_temp)
+  }
+}
+indi <- indi[-1]
+
+# exporting data.frame to excel is easy with xlsx package
+  sheetname <- "mysheet"
+  write.xlsx(nut_rmMissing, "/Users/qiyan/Dropbox/PARENTs/Output/Diet_data_visual.xlsx", sheetName=sheetname)
+  file <- "/Users/qiyan/Dropbox/PARENTs/Output/Diet_data_visual.xlsx"
+# but we want to highlight cells if value greater than or equal to 5
+  wb <- loadWorkbook(file)              # load workbook
+  fo <- Fill(foregroundColor="yellow")  # create fill object
+  cs <- CellStyle(wb, fill=fo)          # create cell style
+  sheets <- getSheets(wb)               # get all sheets
+  sheet <- sheets[[sheetname]]          # get specific sheet
+  rows <- getRows(sheet, rowIndex=2:(nrow(nut_rmMissing)+1))     # get rows
+                                                         # 1st row is headers
+  cells <- getCells(rows, colIndex = 2:(ncol(nut_rmMissing)+1))       # get cells
+# in the wb I import with loadWorkbook, numeric data starts in column 3
+# and the first two columns are row number and label number
+
+  values <- lapply(cells, getCellValue) # extract the values
+
+lapply(names(cells[indi]),
+       function(ii)setCellStyle(cells[[ii]],cs))
+
+saveWorkbook(wb, file)
+```
+
+### Transformation and standardization
+
+Different normalization method, how to find the correct one?
+
+Right now decided to do log transform and then scale all vsriables to [0,1]. See this: https://www.datacamp.com/community/tutorials/hierarchical-clustering-R
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 40, fig.width = 15}
+LogNorm<-function(x, min.val){
+  log2((x + sqrt(x^2 + min.val^2))/2)
+}
+min.val <- 0.01/5
+nut_trans <- data.frame(apply(nut_rmMissing, 2, LogNorm, min.val))
+
+standardize <- function(x){(x-min(x))/(max(x)-min(x))}
+nut_trans <- data.frame(apply(nut_trans, 2, function(x) standardize(x)))
+
+head(nut_trans)
+
+ggplot(stack(nut_trans), aes(x = values, y = ind, fill = ..x..)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis(option = "C") +
+  labs(title = 'Distribution of the raw values of diet variables', x = "Values", y = "Diets") +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  )
+
+# Save data: met_norm - correct for batches, but not log transformation; met_trans - log transformation; nut_rmMissing - removed all missing diet var; nut_trans - transformed diet data
+save(met_norm, met_trans, pheno, nut, met_class, nut_rmMissing, nut_trans, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+```
+
+### Correlation and clustering analysis
+
+__Correlation between diet variables__
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE, fig.height = 40, fig.width = 15}
+load(file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+
+nut_corr <- cor(nut_trans)
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = nut_corr, fontsize=6, fontsize_row=6, color = colors, cellwidth = 5.5, cellheight = 3, border_color=FALSE, show_rownames=F, legend = F)
+```
+
+![Heatmap of thr correlation between diet variables](/Users/qiyan/Dropbox/PARENTs/Output/heatmap_diet_correlation.PNG)
+
+__Hierarchical Clustering__ based on https://uc-r.github.io/hc_clustering.
+
+__Clustering of diet variables__
+
+Choice of clustering methods: https://stats.stackexchange.com/questions/195456/how-to-select-a-clustering-method-how-to-validate-a-cluster-solution-to-warran/195481#195481; https://stats.stackexchange.com/questions/195446/choosing-the-right-linkage-method-for-hierarchical-clustering.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 20, fig.width = 30}
+load(file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+nut_trans_dietCluster <- t(nut_trans)
+
+# Dissimilarity matrix
+d <- dist(nut_trans_dietCluster, method = "euclidean")
+# Hierarchical clustering using Complete Linkage
+hc1 <- hclust(d, method = "complete" )
+# Plot the obtained dendrogram
+# plot(as.dendrogram(hc1), cex = 2, hang = -1, main = "Cluster of subjects based on their diets (complete method)", horiz = TRUE)
+plot(hc1, cex = 1, hang = -1, main = "Cluster of diets (complete method)", cex.main=3)
+
+{
+  library(cluster)
+  # methods to assess agglomerative coefficient, which measures the amount of clustering structure found
+  m <- c( "average", "single", "complete", "ward")
+  names(m) <- c( "average", "single", "complete", "ward")
+  
+  # function to compute coefficient
+  ac <- function(x) {
+    agnes(nut_trans_dietCluster, method = x)$ac
+  }
+  map_dbl(m, ac)
+}
+
+hc2 <- hclust(d, method = "ward.D2" )
+# plot(as.dendrogram(hc2), cex = 2, hang = -1, main = "Cluster of subjects based on their diets (ward D2 method)", horiz = TRUE)
+plot(hc2, cex = 1, hang = -1, main = "Cluster of diets (ward D2 method)", cex.main=3)
+```
+
+Use ward.D2 method, and then cut trees.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Decide how many subgroups based on the total intra-cluster variation (known as total within-cluster variation or total within-cluster sum of square) is minimized
+# See thos post: https://uc-r.github.io/kmeans_clustering#silo
+factoextra::fviz_nbclust(nut_trans_dietCluster, hcut, method = "wss")
+
+print("Cut trees into 4 subgroups.")
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 20, fig.width = 30}
+# Cut trees
+sub_grp <- cutree(hc2, k = 4)
+print("Number of members in each cluster:")
+table(sub_grp)
+
+plot(hc2, cex = 1, hang = -1, main = "Cluster of diets (ward D2 method)", cex.main=3)
+rect.hclust(hc2, k = 4, border = 2:5)
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Plot subgroups in 2D
+factoextra::fviz_cluster(list(data = nut_trans_dietCluster, cluster = sub_grp), labelsize = 5, main = "Cluster of diets (ward D2 method)")
+```
+
+__Clustering of subjects based on diet variables__
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Dissimilarity matrix
+d <- dist(nut_trans, method = "euclidean")
+# Hierarchical clustering using Complete Linkage
+hc1 <- hclust(d, method = "complete" )
+# Plot the obtained dendrogram
+# plot(as.dendrogram(hc1), cex = 2, hang = -1, main = "Cluster of subjects based on their diets (complete method)", horiz = TRUE)
+plot(hc1, cex = 0.4, hang = -1, main = "Cluster of subjects baed on diets (complete method)")
+
+{
+  library(cluster)
+  # methods to assess agglomerative coefficient, which measures the amount of clustering structure found
+  m <- c( "average", "single", "complete", "ward")
+  names(m) <- c( "average", "single", "complete", "ward")
+  
+  # function to compute coefficient
+  ac <- function(x) {
+    agnes(nut_trans, method = x)$ac
+  }
+  map_dbl(m, ac)
+}
+
+hc2 <- hclust(d, method = "ward.D2" )
+# plot(as.dendrogram(hc2), cex = 2, hang = -1, main = "Cluster of subjects based on their diets (ward D2 method)", horiz = TRUE)
+plot(hc2, cex = 0.4, hang = -1, main = "Cluster of subjects baed on diets (ward D2 method)")
+```
+
+Use ward.D2 method, and then cut trees.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Decide how many subgroups based on the total intra-cluster variation (known as total within-cluster variation or total within-cluster sum of square) is minimized
+# See thos post: https://uc-r.github.io/kmeans_clustering#silo
+factoextra::fviz_nbclust(nut_trans, hcut, method = "wss")
+
+print("Cut trees into 4 subgroups.")
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Cut trees
+sub_grp <- cutree(hc2, k = 4)
+print("Number of members in each cluster:")
+table(sub_grp)
+
+plot(hc2, cex = 0.4, hang = -1, main = "Cluster of subjects baed on diets (ward D2 method)")
+rect.hclust(hc2, k = 4, border = 2:5)
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# Plot subgroups in 2D
+factoextra::fviz_cluster(list(data = nut_trans, cluster = sub_grp), labelsize = 5, main = "Cluster of subjects baed on diets (ward D2 method)")
+```
+
+## Diets - Metabolites
 
 ### PCA
 
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+load(file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+# Need to sort the data, important!
+nut_rmMissing <- nut_rmMissing[order(rownames(nut_rmMissing)),]
+nut_trans <- nut_trans[order(rownames(nut_trans)),]
 
-### cluster of subjects
+# Use non-transformed data matrix, center and scale = T
+pca <- prcomp(nut_rmMissing, center = T, scale. = T)
 
+screeplot(pca, type = "l", npcs = 15, main = "Screeplot of the first 10 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+cumpro <- cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:15], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(h = 0.8, col="blue", lty=5)
 
-# PC - met
+pca_score <- data.frame(pca$x[,1:10])
+
+ggbiplot::ggbiplot(pca, ellipse=FALSE, var.axes = F) +
+  labs(title = "PCA plot of diets")
+```
+
+Plot the loadings of PCs.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 43, fig.width = 12}
+pca_loading <- pca$rotation
+
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = pca_loading[,1:10], fontsize=12, fontsize_row=12, color = colors, cluster_cols = F, cellwidth = 25, cellheight = 12, main = "Loadings"
+)
+```
+
+#### Correlation test: PC scores with metabolites
+
+Only 93 subjects have all three datasets!
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+met_diet_input <- met_trans[which(met_trans$Subject_ID %in% rownames(nut_trans)),]
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+corr <- met_diet_input[,-1]
+
+corr_summary <- data.frame(colnames(corr), PC1 = 1, PC2 = 1, PC3 = 1, PC4 = 1, PC5 = 1, PC6 = 1, PC7 = 1, PC8 = 1, PC9 = 1, PC10 = 1)
+
+for (i in 1:10) {
+  for (j in c(1:ncol(corr))){
+    corr_summary[j,i+1] <- cor.test(corr[,j], pca_score[,i], na.action = na.rm)$p.value
+  }
+}
+
+significant_variable_num <- {}
+for (i in 1:nrow(corr_summary)) {
+  if(sum(corr_summary[i,] < 0.05) > 0){
+    temp <- corr_summary[i,1]
+    significant_variable_num <- cbind(significant_variable_num, temp)
+  }
+}
+
+print("Metabolites significanly associated with PC1 - PC10")
+as.vector(significant_variable_num)
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 8}
+num_corr <- cor(corr, pca_score,use = "p")
+
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = num_corr, fontsize=12, fontsize_row=12, color = colors, cluster_cols = F, main = "Correlation between metabolites and diet PCs")
+```
+
+### DietMWAS
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+met_diet_input <- met_diet_input[,-1]
+
+DietMWAS_summary <- data.frame(); k=1
+
+for (i in 1:ncol(met_diet_input)) {
+  for (j in 1:ncol(nut_trans)) {
+    temp <- summary(lm(met_diet_input[,i] ~ nut_trans[,j]))$coefficients[-1,4]
+    if(sum(temp < 0.05) > 0){
+      DietMWAS_summary[k,1] <- colnames(nut_trans)[j]
+      DietMWAS_summary[k,2] <- colnames(met_diet_input)[i]
+      k = k + 1
+    }
+  }
+}
+
+colnames(DietMWAS_summary) <- c("Diet", "Metabolite")
+
+DietMWAS_summary <- merge(x = DietMWAS_summary, y = met_class[,c(1,3)], by.x = "Metabolite", by.y = "Met_ID", all.x = T)
+DietMWAS_summary <- DietMWAS_summary[order(DietMWAS_summary$Diet),]
+DietMWAS_summary <- DietMWAS_summary[,c("Diet", "Metabolite", "Class")]
+
+# Calculate the correlation matrix
+met_diet_corr <- cor(met_diet_input, nut_trans)
+
+# Add correlation coeficient to dietMWAS_summary
+for (i in 1:nrow(DietMWAS_summary)) {
+  DietMWAS_summary$Beta[i] <- met_diet_corr[which(rownames(met_diet_corr) == DietMWAS_summary[i,2]), which(colnames(met_diet_corr) == DietMWAS_summary[i,1])]
+}
+
+DietMWAS_summary
+```
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 54, fig.width = 20}
+colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
+pheatmap::pheatmap(mat = t(met_diet_corr), fontsize=12, fontsize_row=12, color = colors, cellwidth = 14, cellheight = 14, main = "Correlation matrix")
+```
 
 
 
 # To do
 
 * Don't have Age and Sex for everyone...
-* How to deal with missing values?
+* How to deal with missing values? Impute or zero, different variables need different imputation methods.
 * How to deal with outliers? Threshold of outlier?
-
-
-
+* Now we have both food composition and supplemental nutrients. Way to combine it.
+* Develop indexes. Many countries use a food-based approach to dietary guidelines, so examining how the diet compares to dietary guidelines may be of interest to researchers and nutrition policy makers. Diet quality indexes (DQIs) are also widely used and are able to quantify the risk of some nutrition-related health outcomes. See https://www.sciencedirect.com/science/article/pii/B9780128029282000084.
+* Pattern is more useful? See https://www.sciencedirect.com/science/article/pii/S2213858716304193, http://clinchem.aaccjnls.org/content/clinchem/64/1/82.full.pdf.
 
 
 
