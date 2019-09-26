@@ -26,6 +26,7 @@ library(viridis)
 library(hrbrthemes)
 library(gridExtra)
 library(factoextra)
+library(ggpubr)
 
 options(stringsAsFactors = FALSE)
 ```
@@ -60,6 +61,13 @@ nut <- nut_raw[which(nut_raw$PARENTs.ID %in% met$Subject_ID),]
 
 save(met, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_raw.RData")
 ```
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+VennDiagram::draw.triple.venn(area1 = 22, area2 = 20, area3 = 13, n12 = 11, n23 = 4, n13 = 5, 
+    n123 = 1, category = c("Dog People", "Cat People", "Lizard People"), lty = "blank", 
+    fill = c("skyblue", "pink1", "mediumorchid"))
+```
+![Venn Diagram of sample sizes](/Users/qiyan/Dropbox/PARENTs/Output/Venn_samplesize.PNG)
 
 ## Quality Control
 
@@ -127,11 +135,24 @@ halfdatmin <- min(met_impute[,-1], na.rm = TRUE)*0.5
 met_impute[is.na(met_impute)] <- halfdatmin
 ```
 
+### Transformation
+
+Conduct generalized logarithm transformation.
+
+```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+LogNorm<-function(x, min.val){
+  log2((x + sqrt(x^2 + min.val^2))/2)
+}
+min.val <- halfdatmin/5
+met_norm <- data.frame(cbind(met_impute$Subject_ID, apply(met_impute[,-1], 2, LogNorm, min.val))); colnames(met_norm)[1] <- "Subject_ID"
+met_norm[,-1] <- apply(met_norm[,-1], 2, function(x) as.numeric(x))
+```
+
 ### Batch Effect
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
 batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
-batch_impute <- merge(batch, met_impute, by = "Subject_ID")
+batch_impute <- merge(batch, met_norm, by = "Subject_ID")
 batch_pca <- prcomp(batch_impute[,3:ncol(batch_impute)], center = TRUE, scale. = TRUE)
 
 ggbiplot::ggbiplot(batch_pca, ellipse=FALSE,  groups=batch_impute$Batch)
@@ -150,15 +171,15 @@ batch_cor
 Control for batch effect using combat.
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-met_norm <- subset(met_impute, select = -c(trifluoromethanosulfate))
+met_trans <- subset(met_norm, select = -c(trifluoromethanosulfate))
 # batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
-met_norm <- merge(batch, met_norm, by = "Subject_ID")
-rownames(met_norm) <- met_norm$Subject_ID
+met_trans <- merge(batch, met_trans, by = "Subject_ID")
+rownames(met_trans) <- met_trans$Subject_ID
 
-met_norm <- sva::ComBat(dat=t(met_norm[,3:ncol(met_norm)]), batch=met_norm$Batch, mod=NULL, par.prior=TRUE, prior.plots=FALSE)
-met_norm <- data.frame(colnames(met_norm), t(met_norm)); colnames(met_norm)[1] <- "Subject_ID"
+met_trans <- sva::ComBat(dat=t(met_trans[,3:ncol(met_trans)]), batch=met_trans$Batch, mod=NULL, par.prior=TRUE, prior.plots=FALSE)
+met_trans <- data.frame(colnames(met_trans), t(met_trans)); colnames(met_trans)[1] <- "Subject_ID"
 
-batch_combat <- merge(batch, met_norm, by = "Subject_ID")
+batch_combat <- merge(batch, met_trans, by = "Subject_ID")
 batch_pca <- prcomp(batch_combat[,3:ncol(batch_combat)], center = T, scale. = T)
 ggbiplot::ggbiplot(batch_pca, ellipse=FALSE,  groups=batch_combat$Batch, var.axes = F)
 
@@ -178,12 +199,12 @@ CompNorm<-function(x, ref){
   10E9*x/x[ref];
 }
 
-met_norm<-t(apply(met_impute[,-1], 1, CompNorm, "trifluoromethanosulfate"))
-met_norm <- data.frame(met_impute$Subject_ID, met_norm); colnames(met_norm)[1] <- "Subject_ID"
-met_norm <- subset(met_norm, select = -c(trifluoromethanosulfate))
+met_trans<-t(apply(met_norm[,-1], 1, CompNorm, "trifluoromethanosulfate"))
+met_trans <- data.frame(met_norm$Subject_ID, met_trans); colnames(met_trans)[1] <- "Subject_ID"
+met_trans <- subset(met_trans, select = -c(trifluoromethanosulfate))
 
 # batch <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Input/met_129_metaboanalyst.xlsx", sheetIndex = 1, header = T); batch <- batch[,1:2]
-batch_ref <- merge(batch, met_norm, by = "Subject_ID")
+batch_ref <- merge(batch, met_trans, by = "Subject_ID")
 batch_pca <- prcomp(batch_ref[,3:ncol(batch_ref)], center = F, scale. = F)
 
 batch_cor <- data.frame(PCs = colnames(batch_pca$x[,1:5]))
@@ -191,19 +212,6 @@ batch_cor$corr <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric
 batch_cor$P_value <- apply(batch_pca$x[,1:5], 2, function(x) cor.test(x, as.numeric(as.factor(batch_ref$Batch)))$p.value)
 
 batch_cor
-```
-
-### Transformation
-
-Conduct generalized logarithm transformation.
-
-```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-LogNorm<-function(x, min.val){
-  log2((x + sqrt(x^2 + min.val^2))/2)
-}
-min.val <- halfdatmin/5
-met_trans <- data.frame(cbind(met_norm$Subject_ID, apply(met_norm[,-1], 2, LogNorm, min.val))); colnames(met_trans)[1] <- "Subject_ID"
-met_trans[,-1] <- apply(met_trans[,-1], 2, function(x) as.numeric(x))
 ```
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 15, fig.width = 15}
@@ -220,8 +228,8 @@ ggplot(stack(met_trans[,-1]), aes(x = values, y = ind, fill = ..x..)) +
 ```
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-# Save data: met_norm - correct for batches, but not log transformation; met_trans - log transformation
-save(met_norm, met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+# Save data: met_norm - log transformation; met_trans - log transformed and correct for batch
+save(met, met_norm, met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 ```
 
 # Data Mining
@@ -251,11 +259,13 @@ pheatmap::pheatmap(mat = met_corr, fontsize=12, fontsize_row=12, color = colors,
 Only 126 subjects have pheno data, so restricted to 126 subjects.
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+rm(list = ls())
 load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 met_pheno_input <- met_trans[which(rownames(met_trans) %in% pheno$Subject_ID), -1]
 met_pheno_input <- met_pheno_input[,order(colnames(met_pheno_input))]
-met_pheno_input_untrans <- met_norm[which(rownames(met_norm) %in% pheno$Subject_ID), -1]
-met_pheno_input_untrans <- met_pheno_input_untrans[,order(colnames(met_pheno_input_untrans))]
+rownames(pheno) <- pheno$Subject_ID
+# met_pheno_input_untrans <- met_norm[which(rownames(met_norm) %in% pheno$Subject_ID), -1]
+# met_pheno_input_untrans <- met_pheno_input_untrans[order(rownames(met_pheno_input_untrans)),order(colnames(met_pheno_input_untrans))]
 
 # split pheno dataset into numeric and character ones
 pheno_numeric <- select_if(pheno, is.numeric)
@@ -265,8 +275,8 @@ pheno_char <- select_if(pheno, is.character)
 ### PCA analysis
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
-# Use non-transformed data matrix, center and scale = T
-pca <- prcomp(met_pheno_input_untrans, center = T, scale. = T)
+pca <- prcomp(met_pheno_input, center = T, scale. = T)
+pca_shiny <- pca # for shiny use... avoid being rewritten by other codes
 summary(pca)
 pca_score <- data.frame(pca$x[,1:10])
 
@@ -331,7 +341,7 @@ shinyApp(
 
   server = function(input, output) {
     output$pcaPlot = renderPlot({
-      ggbiplot::ggbiplot(pca, ellipse=FALSE, var.axes = F, groups = pheno_char_shiny[,input$cov]) +
+      ggbiplot::ggbiplot(pca_shiny, ellipse=FALSE, var.axes = F, groups = pheno_char_shiny[,input$cov]) +
   labs(title = "PCA plot of metabolites")
     })
   },
@@ -443,6 +453,7 @@ unique(PhenoMWAS_summary$Metabolite)
 Only 94 subjects have diet data.
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# rm(list = ls())
 load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 
 nut_used <- nut[,-c(1:6)]
@@ -629,7 +640,7 @@ ggplot(stack(nut_trans), aes(x = values, y = ind, fill = ..x..)) +
   )
 
 # Save data: met_norm - correct for batches, but not log transformation; met_trans - log transformation; nut_rmMissing - removed all missing diet var; nut_trans - transformed diet data
-save(met_norm, met_trans, pheno, nut, met_class, nut_rmMissing, nut_trans, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+save(met, met_norm, met_trans, pheno, nut, met_class, nut_rmMissing, nut_trans, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 ```
 
 ### Correlation and clustering analysis
@@ -653,6 +664,7 @@ __Clustering of diet variables__
 Choice of clustering methods: https://stats.stackexchange.com/questions/195456/how-to-select-a-clustering-method-how-to-validate-a-cluster-solution-to-warran/195481#195481; https://stats.stackexchange.com/questions/195446/choosing-the-right-linkage-method-for-hierarchical-clustering.
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 20, fig.width = 30}
+# rm(list = ls())
 load(file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 nut_trans_dietCluster <- t(nut_trans)
 
@@ -766,6 +778,7 @@ factoextra::fviz_cluster(list(data = nut_trans, cluster = sub_grp), labelsize = 
 ### PCA
 
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+# rm(list = ls())
 load(file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
 # Need to sort the data, important!
 nut_rmMissing <- nut_rmMissing[order(rownames(nut_rmMissing)),]
@@ -874,6 +887,64 @@ DietMWAS_summary
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 54, fig.width = 20}
 colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
 pheatmap::pheatmap(mat = t(met_diet_corr), fontsize=12, fontsize_row=12, color = colors, cellwidth = 14, cellheight = 14, main = "Correlation matrix")
+```
+
+### Targeted diets - metabolties
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+nut_trans <- nut_trans[order(rownames(nut_trans)),]
+met_diet_input <- met_diet_input[order(rownames(met_diet_input)),]
+combine_met_diet <- cbind(nut_trans, met_diet_input)
+
+targeted_list <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/dietcalc_results_20190621.results_IDR.xlsx", sheetName = "Sheet4", header = T)
+
+scatter_plot <- function(met, diet){
+  sp <- ggscatter(combine_met_diet, x = met, y = diet,
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   )
+# Add correlation coefficient
+return(sp + stat_cor(method = "pearson"))
+}
+
+pdf(file = "/Users/qiyan/Dropbox/PARENTs/Output/Targeted_diet_met_correlation.pdf")
+for (i in 1:nrow(targeted_list)) {
+  met = targeted_list$Met[i]
+  diet = targeted_list$Diet[i]
+  print(scatter_plot(met = met, diet = diet))
+}
+dev.off()
+```
+
+Also try to use the raw metabolomcis and diet data.
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+nut_rmMissing <- nut_rmMissing[order(rownames(nut_rmMissing)),]
+met_raw_wDiet <- met[which(met$Subject_ID %in% rownames(nut_rmMissing)), -1]
+
+met_raw_wDiet <- met_raw_wDiet[order(rownames(met_raw_wDiet)),]
+combine_met_diet <- cbind(nut_rmMissing, met_raw_wDiet)
+
+targeted_list <- read.xlsx(file = "/Users/qiyan/Dropbox/PARENTs/Raw Data/dietcalc_results_20190621.results_IDR.xlsx", sheetName = "Sheet4", header = T)
+
+scatter_plot <- function(met, diet){
+  sp <- ggscatter(combine_met_diet, x = met, y = diet,
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   )
+# Add correlation coefficient
+return(sp + stat_cor(method = "pearson"))
+}
+
+pdf(file = "/Users/qiyan/Dropbox/PARENTs/Output/Targeted_diet_met_correlation_raw.pdf")
+for (i in 1:nrow(targeted_list)) {
+  met = targeted_list$Met[i]
+  diet = targeted_list$Diet[i]
+  print(scatter_plot(met = met, diet = diet))
+}
+dev.off()
 ```
 
 
