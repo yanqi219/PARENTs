@@ -63,8 +63,8 @@ save(met, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetD
 ```
 
 ```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
-VennDiagram::draw.triple.venn(area1 = 22, area2 = 20, area3 = 13, n12 = 11, n23 = 4, n13 = 5, 
-    n123 = 1, category = c("Dog People", "Cat People", "Lizard People"), lty = "blank", 
+VennDiagram::draw.triple.venn(area1 = 129, area2 = 122, area3 = 163, n12 = 94, n23 = 110, n13 = 126, 
+    n123 = 93, category = c("Metabolites", "Diets", "Phenos"), lty = "blank", 
     fill = c("skyblue", "pink1", "mediumorchid"))
 ```
 ![Venn Diagram of sample sizes](/Users/qiyan/Dropbox/PARENTs/Output/Venn_samplesize.PNG)
@@ -227,6 +227,25 @@ ggplot(stack(met_trans[,-1]), aes(x = values, y = ind, fill = ..x..)) +
   )
 ```
 
+### Export files
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+met_trans_stat <- as.data.frame(colnames(met_trans[,-1])); colnames(met_trans_stat) <- "Metabolites"
+met_trans_stat <- merge(met_trans_stat, met_class[,c(1,3)], by.x = "Metabolites", by.y = "Met_ID", all.x = T)
+temp <- met_trans[,-1]; temp <- temp[,order(colnames(temp))]
+
+met_trans_stat$Mean <- apply(temp, 2, mean)
+met_trans_stat$SD <- apply(temp, 2, sd)
+met_trans_stat$RSD <- met_trans_stat$SD/met_trans_stat$Mean
+met_trans_stat$Max <- apply(temp, 2, max)
+met_trans_stat$Min <- apply(temp, 2, min)
+met_trans_stat <- merge(met_trans_stat, met_missing[,1:2], by.x = "Metabolites", by.y = "metabolite", all.x = T)
+
+met_trans_stat <- cbind(met_trans_stat, t(temp))
+
+write.xlsx(met_trans_stat, file = "/Users/qiyan/Dropbox/PARENTs/Output/Metabolomics_data_cleaned_129.xlsx", row.names = T)
+```
+
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
 # Save data: met_norm - log transformation; met_trans - log transformed and correct for batch
 save(met, met_norm, met_trans, pheno, nut, met_class, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
@@ -253,6 +272,25 @@ pheatmap::pheatmap(mat = met_corr, fontsize=12, fontsize_row=12, color = colors,
 ```
 
 ![Heatmap of correlation between metabolites](/Users/qiyan/Dropbox/PARENTs/Output/heatmap_metabolites.PNG)
+
+__Clustering the metabolites__. Use ward.D2 method, and then cut trees.
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+load("/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+met_trans_metCluster <- t(met_trans[,-1])
+
+# Dissimilarity matrix
+d <- dist(met_trans_metCluster, method = "euclidean")
+hc2 <- hclust(d, method = "ward.D2" )
+
+# Cut trees
+sub_grp <- cutree(hc2, k = 4)
+print("Number of members in each cluster:")
+table(sub_grp)
+
+plot(hc2, cex = 1, hang = -1, main = "Cluster of metabolites (ward D2 method)")
+rect.hclust(hc2, k = 4, border = 2:5)
+```
 
 ## Metabolites - Phenotypes
 
@@ -639,8 +677,26 @@ ggplot(stack(nut_trans), aes(x = values, y = ind, fill = ..x..)) +
     strip.text.x = element_text(size = 8)
   )
 
-# Save data: met_norm - correct for batches, but not log transformation; met_trans - log transformation; nut_rmMissing - removed all missing diet var; nut_trans - transformed diet data
+# Save data: met_norm - log transformation; met_trans - log transformationand correct for batches; nut_rmMissing - removed all missing diet var; nut_trans - transformed diet data
 save(met, met_norm, met_trans, pheno, nut, met_class, nut_rmMissing, nut_trans, file = "/Users/qiyan/Dropbox/PARENTs/Input/MetDietPheno_129_trans.RData")
+```
+
+### Export files
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+nut_trans_stat <- as.data.frame(colnames(nut_trans))
+nut_trans_stat <- as.data.frame(nut_trans_stat[order(nut_trans_stat[,1]),])
+colnames(nut_trans_stat) <- "Diet"
+
+temp <- nut_trans; temp <- temp[,order(colnames(temp))]
+
+nut_trans_stat$Mean <- apply(temp, 2, mean)
+nut_trans_stat$SD <- apply(temp, 2, sd)
+nut_trans_stat$RSD <- nut_trans_stat$SD/nut_trans_stat$Mean
+nut_trans_stat$Zero <- apply(temp, 2, function(x) sum(x == 0))
+nut_trans_stat <- cbind(nut_trans_stat, t(temp))
+
+write.xlsx(nut_trans_stat, file = "/Users/qiyan/Dropbox/PARENTs/Output/Diet_data_cleaned_94.xlsx", row.names = T)
 ```
 
 ### Correlation and clustering analysis
@@ -887,6 +943,26 @@ DietMWAS_summary
 ```{r , echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 54, fig.width = 20}
 colors <- rev(colorRampPalette(RColorBrewer::brewer.pal(10, "RdBu"))(256))
 pheatmap::pheatmap(mat = t(met_diet_corr), fontsize=12, fontsize_row=12, color = colors, cellwidth = 14, cellheight = 14, main = "Correlation matrix")
+```
+
+### Export files
+
+```{r , echo=TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+DietMWAS_corr <- data.frame(); k=1
+
+for (i in 1:ncol(met_diet_input)) {
+  for (j in 1:ncol(nut_trans)) {
+    temp <- summary(lm(met_diet_input[,i] ~ nut_trans[,j]))$coefficients[-1,c(1,4)]
+    DietMWAS_corr[k,1] <- colnames(met_diet_input)[i]
+    DietMWAS_corr[k,2] <- colnames(nut_trans)[j]
+    DietMWAS_corr[k,3] <- temp[1]
+    DietMWAS_corr[k,4] <- temp[2]
+    k=k+1
+  }
+}
+colnames(DietMWAS_corr) <- c("Metabolites", "Diet", "Coefficient", "P_value")
+
+write.xlsx(DietMWAS_corr, file = "/Users/qiyan/Dropbox/PARENTs/Output/Met_Diet_corr_94.xlsx", row.names = F)
 ```
 
 ### Targeted diets - metabolties
